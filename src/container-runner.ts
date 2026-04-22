@@ -7,6 +7,7 @@ import fs from 'fs';
 import path from 'path';
 
 import {
+  ANTHROPIC_BASE_URL,
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
   CONTAINER_TIMEOUT,
@@ -44,6 +45,16 @@ export interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   script?: string;
+  /** Channel name the inbound arrived on (e.g. `weixin`, `telegram`). Forwarded
+   *  to the agent as `NANOCLAW_CHANNEL` so per-channel formatting rules in
+   *  CLAUDE.md can match by channel regardless of folder name. */
+  channelName?: string;
+}
+
+export interface AgentProgress {
+  kind: 'tool_use' | 'tool_result' | 'thinking';
+  tool?: string;
+  summary: string;
 }
 
 export interface ContainerOutput {
@@ -51,6 +62,7 @@ export interface ContainerOutput {
   result: string | null;
   newSessionId?: string;
   error?: string;
+  progress?: AgentProgress;
 }
 
 interface VolumeMount {
@@ -247,11 +259,24 @@ async function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
   agentIdentifier?: string,
+  channelName?: string,
 ): Promise<string[]> {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
+
+  // Forward custom Anthropic base URL (e.g. for Kimi / Moonshot proxies).
+  // Credentials for this host are still injected by the OneCLI gateway.
+  if (ANTHROPIC_BASE_URL) {
+    args.push('-e', `ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL}`);
+  }
+
+  // Forward the channel the inbound arrived on (weixin / telegram / …) so
+  // the agent can pick channel-specific formatting rules from CLAUDE.md.
+  if (channelName) {
+    args.push('-e', `NANOCLAW_CHANNEL=${channelName}`);
+  }
 
   // OneCLI gateway handles credential injection — containers never see real secrets.
   // The gateway intercepts HTTPS traffic and injects API keys or OAuth tokens.
@@ -316,6 +341,7 @@ export async function runContainerAgent(
     mounts,
     containerName,
     agentIdentifier,
+    input.channelName,
   );
 
   logger.debug(
